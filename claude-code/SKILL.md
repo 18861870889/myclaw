@@ -145,3 +145,126 @@ Deliverable: Working fix committed to the repository."
 3. Use `-p` for one-shot tasks that should exit
 4. Specify working directory with `cd` before running
 5. For long tasks, consider running in background with `pty:true`
+
+## Non-Blocking Task Execution (Recommended for Long Tasks)
+
+For tasks where you want to continue handling other requests while Claude Code works in the background, use this pattern:
+
+### Step 1: Configure the Hook
+
+First, set up the Claude Code Stop hook to notify you when tasks complete:
+
+```bash
+# Create hook script
+cat > ~/.claude/hooks/notify-agi.sh << 'EOF'
+#!/bin/bash
+RESULT_DIR="$HOME/.claude-code-results"
+META_FILE="${RESULT_DIR}/task-meta.json"
+
+mkdir -p "$RESULT_DIR"
+
+# 防重复
+LOCK_FILE="${RESULT_DIR}/.hook-lock"
+if [ -f "$LOCK_FILE" ]; then
+    LOCK_TIME=$(stat -f %m "$LOCK_FILE" 2>/dev/null || echo 0)
+    NOW=$(date +%s)
+    AGE=$(( NOW - LOCK_TIME ))
+    if [ "$AGE" -lt 30 ]; then
+        exit 0
+    fi
+fi
+touch "$LOCK_FILE"
+
+# 读取任务名
+TASK_NAME="unknown"
+if [ -f "$META_FILE" ]; then
+    TASK_NAME=$(jq -r '.task_name // "unknown"' "$META_FILE" 2>/dev/null || echo "unknown")
+fi
+
+# 发送消息到 Feishu
+openclaw message send --channel feishu --target "USER_ID" --message "🤖 Claude Code 任务完成: $TASK_NAME"
+
+exit 0
+EOF
+chmod +x ~/.claude/hooks/notify-agi.sh
+```
+
+Add to ~/.claude/settings.json:
+```json
+{
+  "hooks": {
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "~/.claude/hooks/notify-agi.sh"
+      }]
+    }]
+  }
+}
+```
+
+### Step 2: Dispatch Task
+
+For tasks where you want to continue handling other requests while Claude Code works in the background, use this pattern:
+
+### Step 1: Dispatch Task to Background
+
+```bash
+# Run Claude Code in background with callback
+SCRATCH=$(mktemp -d)
+cd $SCRATCH
+git init -q
+git config user.email "test@test.com" 2>/dev/null
+git config user.name "Test" 2>/dev/null
+
+claude -p --dangerously-skip-permissions "Your task description here.
+
+When completed, run this command to notify me:
+openclaw system event --text 'Claude Code task completed: [brief result summary]' --mode now" 2>&1 &
+```
+
+### Step 2: Monitor Task (Optional)
+
+```bash
+# Check if background job is still running
+ps aux | grep claude | grep -v grep
+```
+
+### Step 3: Receive Callback
+
+When Claude Code finishes, OpenClaw will receive a system event with the result. You then relay this to the user.
+
+### Full Example
+
+```bash
+# Background execution with professional PM communication
+SCRATCH=$(mktemp -d)
+cd $SCRATCH
+git init -q 2>/dev/null
+
+claude -p --dangerously-skip-permissions "Create a new SwiftUI app in /Users/jerf/openclaw/workspace/MyApp.
+
+Requirements:
+1. Use SwiftUI with MVVM architecture
+2. Implement a user authentication flow
+3. Create a settings page with dark mode toggle
+4. Build for macOS target
+
+Deliverable: Complete Xcode project committed to the workspace." 2>&1 &
+
+# Now you can handle other requests while Claude Code works
+echo "Claude Code is running in background..."
+```
+
+## Callback Mechanism
+
+The key is appending this to your Claude Code prompt:
+
+```
+When completed, run: openclaw system event --text 'Your result summary' --mode now
+```
+
+This will:
+1. Wake up OpenClaw immediately when Claude Code finishes
+2. Provide a brief summary of what was accomplished
+3. Allow you to relay the detailed results to the user
