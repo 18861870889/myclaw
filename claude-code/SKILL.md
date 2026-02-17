@@ -17,91 +17,6 @@ Use this skill to invoke Claude Code CLI for coding tasks.
 2. **Use `--dangerously-skip-permissions`** - To avoid permission prompts in automated mode
 3. **Use `-p` flag** - For print/non-interactive mode that exits after completion
 
-## How to Invoke Claude Code
-
-### Basic Pattern
-
-```bash
-# Create temp git repo and run Claude Code
-SCRATCH=$(mktemp -d)
-cd $SCRATCH
-git init -q
-git config user.email "test@test.com" 2>/dev/null
-git config user.name "Test" 2>/dev/null
-
-claude -p --dangerously-skip-permissions "Your prompt here"
-```
-
-### With Working Directory
-
-```bash
-# Run in a specific directory
-cd /path/to/project
-git init -q 2>/dev/null || true
-claude -p --dangerously-skip-permissions "Your prompt here"
-```
-
-### Advanced Options
-
-```bash
-# With specific model
-claude -p --model sonnet "prompt"
-
-# With JSON output
-claude -p --output-format json "prompt"
-
-# With custom system prompt
-claude -p --system-prompt "You are a Python expert" "prompt"
-
-# With additional directories
-claude -p --add-dir /another/path "prompt"
-
-# Continue previous session
-claude -c -p "continue task"
-
-# Resume specific session
-claude -r session-name "prompt"
-```
-
-## Available Flags
-
-| Flag | Description |
-|------|-------------|
-| `-p`, `--print` | Print response without interactive mode |
-| `--dangerously-skip-permissions` | Skip all permission prompts |
-| `--model` | Specify model (sonnet, opus, haiku) |
-| `--output-format` | Output format (text, json, stream-json) |
-| `--add-dir` | Additional working directories |
-| `-c`, `--continue` | Continue most recent conversation |
-| `-r`, `--resume` | Resume specific session |
-| `--system-prompt` | Custom system prompt |
-
-## Examples
-
-### Fix a bug
-```bash
-cd /path/to/project
-claude -p --dangerously-skip-permissions "Fix the null pointer exception in userService.ts"
-```
-
-### Write tests
-```bash
-cd /path/to/project
-claude -p --dangerously-skip-permissions "Write unit tests for the auth module"
-```
-
-### Create a new feature
-```bash
-cd /path/to/project
-claude -p --dangerously-skip-permissions "Add a dark mode toggle to the settings page"
-```
-
-### Code review
-```bash
-cd /path/to/project
-claude -p --dangerously-skip-permissions "Review this code for security issues"
-```
-
 ## Communication Requirements (IMPORTANT)
 
 When communicating with Claude Code, you MUST use **professional PM-level English**. This means:
@@ -131,39 +46,22 @@ Requirements:
 Deliverable: Working fix committed to the repository."
 ```
 
-## Troubleshooting
+## Non-Blocking Task Execution with Auto-Callback
 
-- **"Not in a git repository"**: Initialize git repo first with `git init`
-- **Permission prompts**: Use `--dangerously-skip-permissions`
-- **Slow startup**: Check network connection for API calls
-- **Session hangs**: Use `-p` for non-interactive mode
+This is the recommended way to run Claude Code tasks while continuing to handle other requests.
 
-## Best Practices
+### Step 1: Configure the Stop Hook
 
-1. Always use a git repository (create temp if needed)
-2. Use `--dangerously-skip-permissions` for automation
-3. Use `-p` for one-shot tasks that should exit
-4. Specify working directory with `cd` before running
-5. For long tasks, consider running in background with `pty:true`
-
-## Non-Blocking Task Execution (Recommended for Long Tasks)
-
-For tasks where you want to continue handling other requests while Claude Code works in the background, use this pattern:
-
-### Step 1: Configure the Hook
-
-First, set up the Claude Code Stop hook to notify you when tasks complete:
+Create the hook script at `~/.claude/hooks/notify-agi.sh`:
 
 ```bash
-# Create hook script
-cat > ~/.claude/hooks/notify-agi.sh << 'EOF'
 #!/bin/bash
 RESULT_DIR="$HOME/.claude-code-results"
 META_FILE="${RESULT_DIR}/task-meta.json"
 
 mkdir -p "$RESULT_DIR"
 
-# 防重复
+# 防重复 (30秒内不重复触发)
 LOCK_FILE="${RESULT_DIR}/.hook-lock"
 if [ -f "$LOCK_FILE" ]; then
     LOCK_TIME=$(stat -f %m "$LOCK_FILE" 2>/dev/null || echo 0)
@@ -185,11 +83,17 @@ fi
 openclaw message send --channel feishu --target "USER_ID" --message "🤖 Claude Code 任务完成: $TASK_NAME"
 
 exit 0
-EOF
+```
+
+Make it executable:
+```bash
 chmod +x ~/.claude/hooks/notify-agi.sh
 ```
 
-Add to ~/.claude/settings.json:
+### Step 2: Register the Hook
+
+Add to `~/.claude/settings.json`:
+
 ```json
 {
   "hooks": {
@@ -203,68 +107,86 @@ Add to ~/.claude/settings.json:
 }
 ```
 
-### Step 2: Dispatch Task
+### Step 3: Write Task Metadata Before Running
 
-For tasks where you want to continue handling other requests while Claude Code works in the background, use this pattern:
-
-### Step 1: Dispatch Task to Background
+Before running Claude Code, create task metadata:
 
 ```bash
-# Run Claude Code in background with callback
-SCRATCH=$(mktemp -d)
-cd $SCRATCH
+mkdir -p ~/.claude-code-results
+echo '{"task_name": "your-task-name", "telegram_group": ""}' > ~/.claude-code-results/task-meta.json
+rm -f ~/.claude-code-results/.hook-lock
+```
+
+### Step 4: Run the Task
+
+```bash
+cd /tmp
 git init -q
-git config user.email "test@test.com" 2>/dev/null
-git config user.name "Test" 2>/dev/null
 
-claude -p --dangerously-skip-permissions "Your task description here.
-
-When completed, run this command to notify me:
-openclaw system event --text 'Claude Code task completed: [brief result summary]' --mode now" 2>&1 &
+claude -p --dangerously-skip-permissions "Your task description here"
 ```
 
-### Step 2: Monitor Task (Optional)
+### Workflow Summary
 
+1. **Write task metadata** to `~/.claude-code-results/task-meta.json`
+2. **Remove lock** (`rm -f ~/.claude-code-results/.hook-lock`)
+3. **Run Claude Code** in background with `&`
+4. **Continue handling** other requests normally
+5. **Receive Feishu notification** when task completes automatically
+
+## Available Flags
+
+| Flag | Description |
+|------|-------------|
+| `-p`, `--print` | Print response without interactive mode |
+| `--dangerously-skip-permissions` | Skip all permission prompts |
+| `--model` | Specify model (sonnet, opus, haiku) |
+| `--output-format` | Output format (text, json, stream-json) |
+| `--add-dir` | Additional working directories |
+| `-c`, `--continue` | Continue most recent conversation |
+| `-r`, `--resume` | Resume specific session |
+| `--system-prompt` | Custom system prompt |
+
+## Examples
+
+### Simple task
 ```bash
-# Check if background job is still running
-ps aux | grep claude | grep -v grep
+cd /tmp && git init -q
+claude -p --dangerously-skip-permissions "Create a hello world HTML file"
 ```
 
-### Step 3: Receive Callback
-
-When Claude Code finishes, OpenClaw will receive a system event with the result. You then relay this to the user.
-
-### Full Example
-
+### With task metadata and callback
 ```bash
-# Background execution with professional PM communication
-SCRATCH=$(mktemp -d)
-cd $SCRATCH
-git init -q 2>/dev/null
+echo '{"task_name": "my-task"}' > ~/.claude-code-results/task-meta.json
+rm -f ~/.claude-code-results/.hook-lock
+cd /tmp && git init -q
+claude -p --dangerously-skip-permissions "Create a game in /path/to/game.html"
+```
 
-claude -p --dangerously-skip-permissions "Create a new SwiftUI app in /Users/jerf/openclaw/workspace/MyApp.
+### Professional PM style prompt
+```bash
+cd /tmp && git init -q
+claude -p --dangerously-skip-permissions "Create a REST API for the todo app.
 
 Requirements:
-1. Use SwiftUI with MVVM architecture
-2. Implement a user authentication flow
-3. Create a settings page with dark mode toggle
-4. Build for macOS target
+1. Use Express.js with TypeScript
+2. Implement CRUD endpoints for todos
+3. Add authentication with JWT
+4. Write unit tests
 
-Deliverable: Complete Xcode project committed to the workspace." 2>&1 &
-
-# Now you can handle other requests while Claude Code works
-echo "Claude Code is running in background..."
+Deliverable: Complete working API committed to the repository."
 ```
 
-## Callback Mechanism
+## Troubleshooting
 
-The key is appending this to your Claude Code prompt:
+- **"Not in a git repository"**: Initialize git repo first with `git init`
+- **Permission prompts**: Use `--dangerously-skip-permissions`
+- **Session hangs**: Use `-p` for non-interactive mode
 
-```
-When completed, run: openclaw system event --text 'Your result summary' --mode now
-```
+## Best Practices
 
-This will:
-1. Wake up OpenClaw immediately when Claude Code finishes
-2. Provide a brief summary of what was accomplished
-3. Allow you to relay the detailed results to the user
+1. Always use a git repository (create temp if needed)
+2. Use `--dangerously-skip-permissions` for automation
+3. Use `-p` for one-shot tasks that should exit
+4. Use professional PM English for task descriptions
+5. Configure Stop hook for automatic callbacks
